@@ -40,9 +40,12 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
-SCREENSHOT_DIR = "/ql/data/photo"
-if not os.path.exists(SCREENSHOT_DIR):
-    os.makedirs(SCREENSHOT_DIR)
+if os.path.exists("/ql"):
+    SCREENSHOT_DIR = "/ql/data/scripts/screenshots"
+else:
+    SCREENSHOT_DIR = os.path.join(os.getcwd(), "screenshots")
+
+os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 def take_screenshot(driver, filename_prefix="screenshot"):
     """统一截图函数，仅在启用截图时执行"""
