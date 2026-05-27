@@ -303,7 +303,7 @@ if __name__ == "__main__":
             button.click()
             logging.info("🎯 业务章签发指令已传递。")
             time.sleep(5)
-            logging.info(f"🎉 最终控制台状态: {driver.find_element(By.CSS_SELECTOR, ".head-info > div").text.strip()}")
+            logging.info(f"🎉 最终控制台状态: {driver.find_element(By.CSS_SELECTOR, '.head-info > div').text.strip()}")
 
     except Exception as e:
         logging.error(f"异常崩溃: {e}")
