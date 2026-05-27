@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # -------------------------------
-# NodeSeek GitHub Actions 自动签到脚本 (主动穿透 Shadow DOM + CDP 仿真轨迹版)
+# NodeSeek GitHub Actions 自动签到脚本 (全局主动防御·全时段动态破盾版)
 # 适配 GitHub Actions / Linux / Headless Chrome
 # -------------------------------
 
@@ -20,8 +20,6 @@ import requests
 import undetected_chromedriver as uc
 
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 
 # ========== 环境变量 ==========
@@ -38,7 +36,6 @@ PUSH_PLUS_TOKEN = os.environ.get("PUSH_PLUS_TOKEN", "").strip()
 PUSH_PLUS_USER = os.environ.get("PUSH_PLUS_USER", "").strip()
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
 TG_USER_ID = os.environ.get("TG_USER_ID", "").strip()
-WXPUSHER_APP_TOKEN = os.environ.get("WXPUSHER_APP_TOKEN", "").strip()
 
 # ========== 基础配置与路径 ==========
 
@@ -51,17 +48,15 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 DRIVER_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ========== 辅助通知与截图函数 ==========
+# ========== 辅助工具函数 ==========
 
 def send(title="NodeSeek 签到通知", content=""):
     logging.info(f"发送通知 -> {title}")
     if PUSH_PLUS_TOKEN:
-        try:
-            requests.post("https://www.pushplus.plus/send", json={"token": PUSH_PLUS_TOKEN, "title": title, "content": content}, timeout=10)
+        try: requests.post("https://www.pushplus.plus/send", json={"token": PUSH_PLUS_TOKEN, "title": title, "content": content}, timeout=10)
         except Exception as e: logging.warning(f"PushPlus 失败: {e}")
     if TG_BOT_TOKEN and TG_USER_ID:
-        try:
-            requests.post(f"https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage", data={"chat_id": TG_USER_ID, "text": f"{title}\n\n{content}"}, timeout=10)
+        try: requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage", data={"chat_id": TG_USER_ID, "text": f"{title}\n\n{content}"}, timeout=10)
         except Exception as e: logging.warning(f"Telegram 失败: {e}")
 
 def take_screenshot(driver, filename_prefix="screenshot"):
@@ -77,38 +72,36 @@ def take_screenshot(driver, filename_prefix="screenshot"):
         return None
 
 
-# ========== 核心：穿透拦截框强力处理器 (主动刺穿 Shadow DOM 版) ==========
+# ========== 【核心黑科技】全局全时段动态破盾监控器 ==========
 
-def solve_any_interceptor_内核版(driver, step_id, step_name, timeout=45):
-    logging.info(f"  >> [{step_id}] 拦截检查: {step_name}...")
+def wait_for_element_safely(driver, by, value, timeout=45, step_name="未知步骤"):
+    """
+    核心看门狗：在等待任何目标元素出现的过程中，时刻保持对5秒盾的扫描。
+    一旦发现5秒盾，立即切入、穿透Shadow DOM、换算坐标并使用CDP秒杀它。
+    """
+    logging.info(f"  [监控启动] 正在等待元素 [{value}]，同时全时段监控5秒盾... (当前目标: {step_name})")
     start_time = time.time()
     challenge_xpath = "//iframe[contains(@src, 'cloudflare') or contains(@id, 'cf-') or contains(@title, 'challenge')]"
-    has_ever_seen_captcha = False
-
+    
     while time.time() - start_time < timeout:
-        current_captcha_found = False
-        
-        # 1. 优先判定主页面是否已经生成有效的过盾 Token
+        # 1. 尝试探测目标正常元素是否已经就绪
         try:
-            token_main = driver.execute_script("""
-                const input = document.querySelector('[name*="turnstile-response"], [name*="cf-turnstile-response"]');
-                return input && input.value.length > 20;
-            """)
-            if token_main:
-                logging.info(f"  >> [{step_id}] ✅ Cloudflare 质询已自动通过 (主页面 Token 已就绪)")
-                return True
+            elements = driver.find_elements(by, value)
+            if elements and elements[0].is_displayed():
+                # 如果是面板数据，避开异步 Loading 文本
+                if value == ".head-info > div" and elements[0].text.strip() == "Loading":
+                    pass
+                else:
+                    logging.info(f"  [监控反馈] 🎉 成功捕获目标业务元素: {value}")
+                    return elements[0]
         except:
             pass
 
-        # 2. 捕捉当前页面上的所有验证码 Iframe 容器
+        # 2. 【时刻检测】轰击可能在任意瞬间蹦出来的五秒盾
         try:
             iframes = driver.find_elements(By.XPATH, challenge_xpath)
-        except:
-            iframes = []
-
-        for iframe in iframes:
-            try:
-                # 核心修正：利用 getBoundingClientRect() 精准获取 Iframe 相对于当前浏览器视口的绝对偏移坐标
+            for iframe in iframes:
+                # 换算 Iframe 视口绝对偏移
                 iframe_box = driver.execute_script("""
                     var rect = arguments[0].getBoundingClientRect();
                     return {x: rect.left, y: rect.top, width: rect.width, height: rect.height};
@@ -117,96 +110,72 @@ def solve_any_interceptor_内核版(driver, step_id, step_name, timeout=45):
                 if not iframe_box or iframe_box['width'] == 0 or iframe_box['height'] == 0:
                     continue
 
-                # 强行切入 Iframe 隔离域内部
+                # 强行荡过去，刺穿多层沙箱进程
                 driver.switch_to.frame(iframe)
                 
-                # 核心黑科技：通过递归 JS 脚本主动刺穿穿透内部的每一层 Shadow DOM 寻找多选框
+                # 深度递归突刺 Shadow DOM
                 pos = driver.execute_script("""
-                    function findCheckboxInShadow(root) {
+                    function findTarget(root) {
                         if (!root) return null;
-                        // 匹配你提供的三大核心指纹选择器
-                        let el = root.querySelector('input[type="checkbox"], #challenge-stage, .ctp-checkbox-label, #success-wrapper, .checkmark');
+                        let el = root.querySelector('input[type="checkbox"], .ctp-checkbox-label, .checkmark, #challenge-stage');
                         if (el) return el;
-                        
-                        let allEls = root.querySelectorAll('*');
-                        for (let i = 0; i < allEls.length; i++) {
-                            if (allEls[i].shadowRoot) {
-                                let found = findCheckboxInShadow(allEls[i].shadowRoot);
+                        let kids = root.querySelectorAll('*');
+                        for (let i = 0; i < kids.length; i++) {
+                            if (kids[i].shadowRoot) {
+                                let found = findTarget(kids[i].shadowRoot);
                                 if (found) return found;
                             }
                         }
                         return null;
                     }
-                    let cb = findCheckboxInShadow(document);
-                    if (cb) {
-                        let rect = cb.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-                        }
+                    let target = findTarget(document);
+                    if (target) {
+                        let rect = target.getBoundingClientRect();
+                        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
                     }
                     return null;
                 """)
                 
-                # 顺便检查内部 Token 状态
-                token_inner = driver.execute_script("""
+                # 检查此 Iframe 内部是否其实已经拿到放行 Token
+                token_ready = driver.execute_script("""
                     const input = document.querySelector('[name*="turnstile-response"]');
                     return input && input.value.length > 20;
                 """)
                 
-                # 无论结果如何，必须立刻切回主页面，确保后续大循环上下文不丢失
+                # 无论抓到坐标还是 Token，必须光速切回主域，保证大循环上下文绝对安全
                 driver.switch_to.default_content()
 
-                if token_inner:
-                    logging.info(f"  >> [{step_id}] ✅ Cloudflare 质询已自动通过 (Iframe 内 Token 已就绪)")
-                    return True
+                if token_ready:
+                    logging.info("  [监控反馈] 🛡️ 检测到五秒盾已自行校验通过。")
+                    time.sleep(2)
+                    break
 
                 if pos:
-                    current_captcha_found = True
-                    has_ever_seen_captcha = True
-                    
-                    # 两层相对坐标叠加，精准算到全屏像素视口点
+                    # 融合主视口绝对坐标
                     click_x = int(iframe_box['x'] + pos['x'])
                     click_y = int(iframe_box['y'] + pos['y'])
                     
-                    logging.info(f"  >> [{step_id}] 🎯 成功刺穿 Shadow DOM 抓取到复选框视口绝对坐标: X:{click_x}, Y:{click_y}")
-                    take_screenshot(driver, f"{step_id}_before_cdp_click")
+                    logging.info(f"  [监控反馈] 🚨 逮到了！刷新/跳转触发了5秒盾！绝对坐标: X:{click_x}, Y:{click_y}。拉取 CDP 物理重击...")
+                    take_screenshot(driver, "cf_intercepted_before_click")
                     
-                    # 仿真拟人化物理交互链：移动 -> 按下 -> 弹起
-                    # 1. 移动鼠标到目标中心点
-                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                        'type': 'mouseMoved', 'x': click_x, 'y': click_y
-                    })
+                    # 高仿真物理轨迹发射
+                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': click_x, 'y': click_y})
                     time.sleep(random.uniform(0.1, 0.2))
-                    
-                    # 2. 发射原生鼠标左键按下信号
-                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                        'type': 'mousePressed', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1
-                    })
+                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
                     time.sleep(random.uniform(0.05, 0.12))
+                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
                     
-                    # 3. 发射原生鼠标左键释放信号
-                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                        'type': 'mouseReleased', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1
-                    })
-                    
-                    logging.info(f"  >> [{step_id}] 🚀 CDP 物理坐标击打指令已成功送达！等待验证码反应...")
-                    time.sleep(6)  # 留出充足时间让盾刷新释放网关
-                    break  # 打破当前 iframes 浅循环，回到外层等待重新判别整体状态
-                    
-            except Exception as e:
-                try: driver.switch_to.default_content()
-                except: pass
-                logging.debug(f"探测 Iframe 周期内遭遇微小异常: {e}")
+                    logging.info("  [监控反馈] 🚀 CDP 点击信号已精准注入，挂起等待盾释放放行...")
+                    time.sleep(7)
+                    break # 震碎当前单次 iframe 浅循环，促使外层大监控流重新洗牌判断页面状态
+        except Exception as e:
+            try: driver.switch_to.default_content()
+            except: pass
+            logging.debug(f"看门狗线程内遭遇非致命波动: {e}")
 
-        # 退出放行判定
-        if not current_captcha_found and not has_ever_seen_captcha and (time.time() - start_time > 5):
-            logging.info(f"  >> [{step_id}] 确认环境干净，未受阻拦")
-            return True
+        time.sleep(1.5) # 极高密度的检测频率
 
-        time.sleep(2)
-        
-    logging.info(f"  >> [{step_id}] ⚠️ 验证处理超时，尝试继续后续主流程...")
-    return False
+    raise TimeoutError(f"在 {timeout} 秒内未能成功加载页面或攻破五秒盾拦截。")
 
 
 # ========== 浏览器初始化环境准备 ==========
@@ -225,11 +194,10 @@ def get_chrome_info():
 
 def setup_browser():
     if not COOKIE:
-        logging.error("❌ 错误: 环境变量 NS_COOKIE 为空，请在 Secrets 中设置")
+        logging.error("❌ 错误: 环境变量 NS_COOKIE 为空")
         return None
 
     chrome_path, chrome_major = get_chrome_info()
-    
     chrome_options = uc.ChromeOptions()
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -265,20 +233,16 @@ def setup_browser():
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"})
     except: pass
 
-    # 1. 首次加载首页
+    # 1. 加载首页
     logging.info(">>> [01] 正在加载 NodeSeek 首页...")
-    try:
-        driver.get("https://www.nodeseek.com")
-        WebDriverWait(driver, 25).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    except Exception as e:
-        logging.warning(f"首页基础页面加载超时: {e}")
+    driver.get("https://www.nodeseek.com")
+    
+    # 首次开门检查：可能直接遭遇冷启动5秒盾
+    try: wait_for_element_safely(driver, By.TAG_NAME, "body", timeout=30, step_name="首页开门首检")
+    except: pass
 
-    # 2. 首屏破盾拦截
-    solve_any_interceptor_内核版(driver, "02", "首页首屏五秒盾破盾拦截")
-    take_screenshot(driver, "02_homepage_solved")
-
-    # 3. 注入 Cookie
-    logging.info(">>> [03] 正在向当前会话域灌入身份凭证...")
+    # 2. 灌入 Cookie 凭证
+    logging.info(">>> [02] 正在向当前会话域灌入身份凭证...")
     success_count = 0
     for item in COOKIE.split(";"):
         item = item.strip()
@@ -288,29 +252,20 @@ def setup_browser():
             driver.add_cookie({"name": name.strip(), "value": value.strip(), "domain": ".nodeseek.com", "path": "/"})
             success_count += 1
         except Exception as e:
-            logging.warning(f"添加 Cookie 失败: {item[:20]}..., {e}")
+            logging.warning(f"添加 Cookie 失败: {e}")
     logging.info(f">> 已成功激活 {success_count} 项 Cookie 凭证")
 
-    # 4. 刷新重载会话
-    logging.info(">>> [04] 正在重载会话以激活登录态...")
-    try:
-        driver.refresh()
-        time.sleep(5)
-    except Exception as e:
-        logging.error(f"激活页面刷新失败: {e}")
-        driver.quit()
-        return None
+    # 3. 【纠正核心】刷新页面激活登录态
+    logging.info(">>> [03] 正在刷新重载会话（重点监控刷新产生的5秒盾）...")
+    driver.refresh()
 
-    # 5. 二次防反扑过盾
-    solve_any_interceptor_内核版(driver, "05", "登录态激活后终检")
-
-    # 6. 验证最终登录状态
+    # 刷新后，盾随时会弹出来！让看门狗在等待“用户名元素”的同时，时刻准备击杀5秒盾！
     try:
-        username_element = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.Username")))
+        username_element = wait_for_element_safely(driver, By.CSS_SELECTOR, "a.Username", timeout=45, step_name="刷新激活登录态后拦截检测")
         logging.info(f"🎉 【成功越狱】成功识别登录状态！当前账户: {username_element.text.strip()}")
         return driver
-    except Exception:
-        logging.error("❌ 失败: 未能检测到登录用户名。可能 Cookie 已过期，或者被五秒盾持续拦截。")
+    except Exception as e:
+        logging.error(f"❌ 失败: 登录态验证失败或5秒盾未能在时限内攻破。")
         take_screenshot(driver, "error_login_failed")
         driver.quit()
         return None
@@ -327,37 +282,33 @@ if __name__ == "__main__":
 
     exit_code = 0
     try:
+        # 尝试点击首页自带的弹出向导（如有）
         try:
             sign_icon = driver.find_element(By.XPATH, "//span[@title='签到']")
             sign_icon.click()
-            logging.info(">> 首页签到向导图标触发成功")
             time.sleep(2)
-        except:
-            pass
+        except: pass
 
-        logging.info(">>> [06] 进入数据面板验证今日签到状态...")
+        # 进入专门的数据面板
+        logging.info(">>> [04] 切换至签到控制面板...")
         driver.get("https://www.nodeseek.com/board")
         
-        head_info_div = WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".head-info > div")))
-        
-        for _ in range(10):
-            if head_info_div.text.strip() != "Loading": break
-            time.sleep(1)
+        # 跳转控制面板时也有几率弹盾！继续让看门狗全时段护航
+        head_info_div = wait_for_element_safely(driver, By.CSS_SELECTOR, ".head-info > div", timeout=35, step_name="进入签到控制面板")
 
         buttons = head_info_div.find_elements(By.TAG_NAME, "button")
         if not buttons:
             sign_info = head_info_div.text.strip()
             logging.info(f"✅ 结果提示: 今日已完成签到。当前面板状态: {sign_info}")
             send(title="NodeSeek 签到通知 (无需重复执行)", content=sign_info)
-            take_screenshot(driver, "06_sign_status_checked")
+            take_screenshot(driver, "04_sign_status_checked")
         else:
-            logging.info(">>> [07] 检测到当前处于【尚未签到】状态，开始寻找动作按钮...")
-            
+            logging.info(">>> [05] 检测到当前处于【尚未签到】状态，开始寻找动作按钮...")
             if SIGN_MODE == "chicken":
                 logging.info(">> 策略指派: 优先稳定获取 鸡腿 x 5")
                 button = head_info_div.find_element(By.XPATH, ".//button[text()='鸡腿 x 5']")
             else:
-                logging.info(">> 策略指派: 触发极客精神 试试手气")
+                logging.info(">> 策略指派: 试试手气")
                 button = head_info_div.find_element(By.XPATH, ".//button[text()='试试手气']")
 
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
@@ -366,22 +317,20 @@ if __name__ == "__main__":
             logging.info("🎯 核心签到按钮已被物理击中！")
             time.sleep(6)
 
-            try:
-                final_info = driver.find_element(By.CSS_SELECTOR, ".head-info > div").text.strip()
-            except:
-                final_info = "签到动作已触发，但读取最终面板信息超时"
+            try: final_info = driver.find_element(By.CSS_SELECTOR, ".head-info > div").text.strip()
+            except: final_info = "签到动作已触发，但读取最终面板信息超时"
 
             logging.info(f"🎉 签到最终执行结果: {final_info}")
             send(title="NodeSeek 自动签到成功通知", content=final_info)
             
-            final_shot = take_screenshot(driver, "07_sign_success")
+            final_shot = take_screenshot(driver, "05_sign_success")
             
             if final_shot and TG_BOT_TOKEN and TG_USER_ID:
                 try:
                     subprocess.run([
                         "curl", "-s", "-X", "POST", f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto",
                         "-F", f"chat_id={TG_USER_ID}", "-F", f"photo=@{final_shot}",
-                        "-F", "caption=🤖 NodeSeek 影子DOM破盾任务已完美落幕！"
+                        "-F", "caption=🤖 NodeSeek 影子DOM全时段看门狗任务已完美落幕！"
                     ], stdout=subprocess.DEVNULL)
                 except: pass
 
