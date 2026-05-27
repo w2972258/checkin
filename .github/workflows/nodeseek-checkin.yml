@@ -5,6 +5,11 @@ on:
   schedule:
     - cron: "30 0 * * *"
 
+# 显式声明权限，确保最后的自动清理插件不会报 403 错误
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   checkin:
     runs-on: ubuntu-latest
@@ -32,15 +37,16 @@ jobs:
             fonts-liberation
 
       # =========================
-      # 启动虚拟显示
+      # 启动虚拟显示（让 Chrome 误以为有显示器）
       # =========================
       - name: Start Xvfb
         run: |
           Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+          sleep 3
           echo "DISPLAY=:99" >> $GITHUB_ENV
 
       # =========================
-      # Python
+      # Python 环境准备
       # =========================
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -53,11 +59,12 @@ jobs:
           pip install selenium undetected-chromedriver requests
 
       # =========================
-      # Run
+      # 执行全拟真人类行为签到
       # =========================
       - name: Run script
         env:
           DISPLAY: :99
+          NS_HEADLESS: "false"  # 【核心修改】配合 Xvfb 关闭无头模式，伪装成纯桌面端
           NS_COOKIE: ${{ secrets.NS_COOKIE }}
           NS_SIGN_MODE: chicken
           NS_ENABLE_SCREENSHOT: "true"
@@ -69,7 +76,7 @@ jobs:
           python nodeseek.py
 
       # =========================
-      # artifacts
+      # 无论成败，强制导出全链路快照
       # =========================
       - name: Upload screenshots
         if: always()
@@ -77,9 +84,10 @@ jobs:
         with:
           name: screenshots
           path: screenshots/
+          retention-days: 3  # 留 3 天足够排查了，节约你的 Actions 空间
 
       # =========================
-      # 清理记录
+      # 优雅地自动清理历史运行记录
       # =========================
       - name: Cleanup runs
         if: always()
