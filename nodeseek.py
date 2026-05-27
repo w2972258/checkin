@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # -------------------------------
-# NodeSeek GitHub Actions 自动签到脚本 (防 CF 五秒盾增强版)
+# NodeSeek GitHub Actions 自动签到脚本 (强力破盾点击版)
 # 适配 GitHub Actions / Linux / Headless Chrome
 # -------------------------------
 
@@ -183,10 +183,74 @@ def get_writable_chromedriver():
         return None
 
 
-# ========== 浏览器初始化 (强化防检测版) ==========
+# ========== 核心逻辑：精确定位并点击人机验证框 ==========
+
+def handle_cloudflare_challenge(driver, timeout=25):
+    """循环等待直到确认框出现，随后精准模拟点击复选框"""
+    logging.info("正在持续扫描是否存在 Cloudflare 人机验证点击框...")
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        # 寻找 Cloudflare 专属的安全挑战 iframe 元素
+        iframes = driver.find_elements(By.XPATH, "//iframe[contains(@src, 'cloudflare') or contains(@title, 'challenge') or contains(@id, 'cf-')]")
+        if iframes:
+            logging.info("【警告】检测到明显的 Cloudflare Turnstile 验证框！开始执行破盾点击流程...")
+            try:
+                iframe = iframes[0]
+                
+                # 1. 滚动让其居中可见
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", iframe)
+                time.sleep(random.uniform(1.0, 1.8))
+                
+                # 2. 方案一：在主父页面框架下，计算偏移量精准击中复选框位置（通常在左侧 X:35, Y:32 附近）
+                # 带有随机微调防止固定像素特征被抓
+                target_x = random.randint(32, 42)
+                target_y = random.randint(28, 36)
+                
+                actions = ActionChains(driver)
+                actions.move_to_element_with_offset(iframe, target_x, target_y)
+                actions.click()
+                actions.perform()
+                logging.info(f"已模拟人类鼠标轨迹对验证框发送物理点击事件 (偏移量 X:{target_x}, Y:{target_y})")
+                
+                # 3. 方案二：双保险，直接切入 Iframe 内部对确认元素补刀
+                try:
+                    driver.switch_to.frame(iframe)
+                    # Turnstile 内部可交互区域的选择器特征
+                    click_targets = driver.find_elements(By.CSS_SELECTOR, "#challenge-stage, .cb-i, input[type='checkbox'], body")
+                    if click_targets:
+                        inner_actions = ActionChains(driver)
+                        inner_actions.move_to_element(click_targets[0]).click().perform()
+                        logging.info("Iframe 内部结构点击补救发送成功")
+                except Exception as iframe_err:
+                    logging.debug(f"Iframe 内部穿透点击未成功（通常由于跨域沙箱隔离，属正常现象）: {iframe_err}")
+                finally:
+                    # 必须切回主上下文
+                    driver.switch_to.default_content()
+                
+                # 4. 点击完成后延迟观察响应结果
+                logging.info("点击完成，等待 Cloudflare 释放网关阻拦...")
+                time.sleep(random.uniform(6.0, 8.0))
+                return True
+                
+            except Exception as e:
+                logging.warning(f"执行人机复选框点击时出现异常: {e}")
+                try:
+                    driver.switch_to.default_content()
+                except:
+                    pass
+        
+        # 频率不宜过快
+        time.sleep(1.5)
+        
+    logging.info("未发现待挂起的人机验证复选框（可能直接通过或已被动放行）")
+    return False
+
+
+# ========== 浏览器初始化 ==========
 
 def setup_browser():
-    """初始化浏览器并执行人类行为模拟以绕过 Cloudflare"""
+    """初始化浏览器并注入人机行为对抗"""
     if not COOKIE:
         logging.error("环境变量 NS_COOKIE 为空，请在 GitHub Secrets 中设置 NS_COOKIE")
         return None
@@ -207,7 +271,7 @@ def setup_browser():
         logging.info("启用 headless 模式")
         chrome_options.add_argument("--headless=new")
 
-    # 随机化 User-Agent，增加指纹多样性
+    # 随机化稳定的伪装指纹
     chrome_options.add_argument(
         "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     )
@@ -223,7 +287,7 @@ def setup_browser():
         logging.debug(traceback.format_exc())
         return None
 
-    # 隐藏 WebDriver 特征
+    # 隐藏自动化内核指纹特征
     try:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
@@ -231,24 +295,19 @@ def setup_browser():
     except Exception as e:
         logging.warning(f"设置 webdriver 隐藏失败: {e}")
 
-    # 1. 访问首页并模拟人类行为过盾
-    logging.info("正在访问 NodeSeek 首页，准备进行人类行为模拟...")
+    # 1. 首次敲门访问首页
+    logging.info("正在引导浏览器至 NodeSeek 首页...")
     try:
         driver.get("https://www.nodeseek.com")
-        
-        # 模拟鼠标随机移动，伪装真人轨迹
-        actions = ActionChains(driver)
-        for _ in range(random.randint(3, 5)):
-            actions.move_by_offset(random.randint(50, 400), random.randint(50, 400)).perform()
-            time.sleep(random.uniform(0.8, 1.5))
-            
-        # 动态等待：确保基础页面结构或五秒盾加载完毕
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 25).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     except Exception as e:
-        logging.warning(f"首页加载或模拟行为超时，继续尝试注入凭证... 错误: {e}")
+        logging.warning(f"首页基础容器加载超时: {e}")
 
-    # 2. 添加 Cookie
-    logging.info("开始添加账号 Cookie")
+    # 2. 检查是否有首屏验证码拦路，有就点击
+    handle_cloudflare_challenge(driver, timeout=20)
+
+    # 3. 登录凭证注入（不管过没过盾，都先把 Cookie 灌进去）
+    logging.info("正在向当前会话域注入用户 Cookie 身份凭证...")
     success_count = 0
     for item in COOKIE.split(";"):
         item = item.strip()
@@ -266,28 +325,31 @@ def setup_browser():
         except Exception as e:
             logging.warning(f"添加 Cookie 失败: {item[:30]}..., {e}")
             
-    logging.info(f"Cookie 添加完成，成功添加 {success_count} 项")
+    logging.info(f"Cookie 注入完毕，成功应用 {success_count} 项凭证")
 
-    # 3. 刷新页面激活状态，并给出充裕的时间让 CF 质询通过
+    # 4. 刷新页面激活 Cookie
     try:
+        logging.info("正在刷新会话页面以全面激活登录态...")
         driver.refresh()
-        # 随机延迟模拟人类阅读等待，同时也是给验证留出窗口
-        time.sleep(random.uniform(6.0, 9.0))
+        time.sleep(random.uniform(4.0, 6.0))
     except Exception as e:
-        logging.error(f"页面刷新失败: {e}")
+        logging.error(f"激活页面刷新失败: {e}")
         take_screenshot(driver, "refresh_failure")
         driver.quit()
         return None
 
-    # 4. 验证登录结果
+    # 5. 二次验证防反扑：部分时候刷新完后，Cloudflare 会因 Cookie 更新重新要求人类校验点击
+    handle_cloudflare_challenge(driver, timeout=15)
+
+    # 6. 验证最终登录状态
     try:
         username_element = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "a.Username"))
         )
-        logging.info(f"成功绕过质询，当前账号: {username_element.text.strip()}")
+        logging.info(f"【成功破盾】用户登录态有效，当前账户名: {username_element.text.strip()}")
         return driver
     except Exception:
-        logging.error("未检测到用户名元素，可能被 Cloudflare 持续拦截或 Cookie 已失效")
+        logging.error("未检测到预期的账户元素，多半仍被五秒盾封锁或 Cookie 已经失效")
         take_screenshot(driver, "cf_block_or_login_failure")
         driver.quit()
         return None
@@ -316,7 +378,7 @@ def click_sign_icon(driver):
 def check_sign_status(driver):
     """检查签到状态"""
     try:
-        logging.info("正在访问签到页面")
+        logging.info("正在访问签到板块详情页")
         driver.get("https://www.nodeseek.com/board")
         WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
@@ -346,9 +408,9 @@ def check_sign_status(driver):
 # ========== 点击签到按钮 ==========
 
 def click_sign_button(driver):
-    """查找并点击签到按钮"""
+    """查找并点击具体签到按钮"""
     try:
-        logging.info("开始查找签到区域")
+        logging.info("开始查找签到按钮交互区域")
         sign_div = WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((
                 By.XPATH,
@@ -394,14 +456,14 @@ def click_sign_button(driver):
         return False
 
 
-# ========== 主程序 ==========
+# ========== 主程序入口 ==========
 
 if __name__ == "__main__":
     logging.info("开始执行 NodeSeek 签到脚本")
 
     driver = setup_browser()
     if not driver:
-        logging.error("浏览器初始化/身份验证失败，流程终止")
+        logging.error("浏览器环境初始化或破盾失败，脚本强制退出")
         exit(1)
 
     exit_code = 0
