@@ -231,6 +231,24 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
 
 # ========== 浏览器初始化逻辑 ==========
 
+def get_chrome_major_version():
+    """
+    动态嗅探 Actions 环境下安装的真实 Chrome 主版本号
+    """
+    import subprocess
+    import re
+    for name in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]:
+        path = shutil.which(name)
+        if path:
+            try:
+                output = subprocess.check_output([path, "--version"], text=True)
+                match = re.search(r"(\d+)\.", output)
+                if match: 
+                    return int(match.group(1))
+            except: 
+                pass
+    return None
+
 def setup_browser():
     if not COOKIE: return None
 
@@ -249,10 +267,19 @@ def setup_browser():
     # 动态伪造常见的桌面端 UA
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
+    # 【核心修复】动态捕获系统版本，强行向下锁死 ChromeDriver 版本，阻止其越级下载
+    chrome_major = get_chrome_major_version()
+    kwargs = {"options": chrome_options, "use_subprocess": True}
+    if chrome_major:
+        logging.info(f"📌 检测到宿主系统 Chrome 主版本为: [{chrome_major}]，正在强制对齐驱动...")
+        kwargs["version_main"] = chrome_major  # 告诉 uc：别乱下载，给我用 148！
+    else:
+        logging.warning("⚠️ 未能探测到系统 Chrome 版本，将尝试默认拉取。")
+
     try:
-        driver = uc.Chrome(options=chrome_options, use_subprocess=True)
+        driver = uc.Chrome(**kwargs)
     except Exception as e:
-        logging.error(f"引擎启动失败: {e}")
+        logging.error(f"❌ 引擎启动失败: {e}")
         return None
 
     # 直切板级主域挂载身份
@@ -278,7 +305,6 @@ def setup_browser():
         logging.error(f"❌ 流程中断: {e}")
         driver.quit()
         return None
-
 
 if __name__ == "__main__":
     logging.info("================ NodeSeek 伪装者协议启动 ================")
