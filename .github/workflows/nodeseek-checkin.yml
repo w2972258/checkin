@@ -56,8 +56,8 @@ jobs:
       - name: Install Python packages
         run: |
           pip install --upgrade pip
-          pip install selenium undetected-chromedriver requests
-
+          pip install selenium undetected-chromedriver requests pillow  # <- 加上 pillow
+          
       # =========================
       # 执行全拟真人类行为签到
       # =========================
