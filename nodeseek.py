@@ -117,19 +117,13 @@ def human_move_cdp(driver, start_x, start_y, end_x, end_y):
         )
         time.sleep(random.uniform(0.008, 0.025))
 
-
 def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
-    """
-    毫秒级防假死看门狗：穿透常规 Iframe 与深层 Shadow-Root。
-    """
     logging.info(f"🔍 [看门狗] 搜寻 [{value}] | 阶段: {step_name}")
     start_time = time.time()
-    
-    # 模拟鼠标初始停泊坐标
     cur_x, cur_y = random.randint(10, 40), random.randint(10, 40)
 
     while time.time() - start_time < timeout:
-        # 通道1：检测顶层业务层是否加载完毕
+        # 通道1：业务层就绪检测
         try:
             elements = driver.find_elements(by, value)
             if elements and elements[0].is_displayed():
@@ -137,89 +131,96 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
                     pass
                 else: 
                     return elements[0]
-        except: 
+        except Exception as e:
             pass
 
-        # 通道2：穿透 Cloudflare 验证框防御壁
+        # 通道2：CF 盾穿透与几何盲击检测
         try:
             iframes = driver.find_elements(By.TAG_NAME, "iframe")
             for iframe in iframes:
-                ifr_id = iframe.get_attribute("id") or ""
-                ifr_src = iframe.get_attribute("src") or ""
-                
-                if "cloudflare" not in ifr_src and "challenge" not in ifr_src and "cloudflare" not in ifr_id:
-                    continue
-                
-                # 计算 Iframe 在整个大视口下的物理偏移
-                iframe_box = driver.execute_script("""
-                    var rect = arguments[0].getBoundingClientRect();
-                    return {x: rect.left, y: rect.top, width: rect.width, height: rect.height};
-                """, iframe)
-                
-                if not iframe_box or iframe_box['width'] == 0 or iframe_box['height'] == 0:
-                    continue
+                try:
+                    ifr_id = iframe.get_attribute("id") or ""
+                    ifr_src = iframe.get_attribute("src") or ""
+                    
+                    if "cloudflare" not in ifr_src and "challenge" not in ifr_src and "cloudflare" not in ifr_id:
+                        continue
+                    
+                    # 获取 Iframe 绝对视口边界
+                    iframe_box = driver.execute_script("""
+                        var rect = arguments[0].getBoundingClientRect();
+                        return {x: rect.left, y: rect.top, width: rect.width, height: rect.height};
+                    """, iframe)
+                    
+                    if not iframe_box or iframe_box['width'] == 0 or iframe_box['height'] == 0:
+                        continue
 
-                # 穿透至内域寻靶
-                driver.switch_to.frame(iframe)
-                pos = driver.execute_script("""
-                    function findBox(root) {
-                        if (!root) return null;
-                        let selectors = ['input[type="checkbox"]', '.ctp-checkbox-label', '.checkmark', '#challenge-stage'];
-                        for (let s of selectors) {
-                            let el = root.querySelector(s);
-                            if (el && el.getBoundingClientRect().width > 0) {
-                                var r = el.getBoundingClientRect();
-                                return { x: r.left + r.width/2, y: r.top + r.height/2 };
+                    # 切换上下文寻靶
+                    driver.switch_to.frame(iframe)
+                    pos = driver.execute_script("""
+                        function findBox(root) {
+                            if (!root) return null;
+                            let selectors = ['input[type="checkbox"]', '.ctp-checkbox-label', '.checkmark', '#challenge-stage', '[id*="challenge"]'];
+                            for (let s of selectors) {
+                                let el = root.querySelector(s);
+                                if (el && el.getBoundingClientRect().width > 0) {
+                                    var r = el.getBoundingClientRect();
+                                    return { x: r.left + r.width/2, y: r.top + r.height/2 };
+                                }
                             }
-                        }
-                        let kids = root.querySelectorAll('*');
-                        for (let i=0; i<kids.length; i++) {
-                            if (kids[i].shadowRoot) {
-                                let f = findBox(kids[i].shadowRoot);
-                                if (f) return f;
+                            let kids = root.querySelectorAll('*');
+                            for (let i=0; i<kids.length; i++) {
+                                if (kids[i].shadowRoot) {
+                                    let f = findBox(kids[i].shadowRoot);
+                                    if (f) return f;
+                                }
                             }
+                            return null;
                         }
-                        return null;
-                    }
-                    return findBox(document);
-                """)
-                driver.switch_to.default_content() # 火速安全撤回到主文档域
+                        return findBox(document);
+                    """)
+                except Exception as iframe_inner_e:
+                    logging.debug(f"Iframe 内部解析异常: {iframe_inner_e}")
+                    pos = None
+                finally:
+                    # 核心修复：确保无论如何必须回归主文档域，打破锁死僵局
+                    try: driver.switch_to.default_content()
+                    except: pass
 
+                # 判定坐标：精准锁定或几何盲击
                 if pos:
-                    # 计算最终的绝对视口坐标
                     click_x = int(iframe_box['x'] + pos['x'])
                     click_y = int(iframe_box['y'] + pos['y'])
-                    
-                    logging.info(f"🚨 [安全拦截] 捕捉到验证盾物理靶心 -> X: {click_x}, Y: {click_y}")
-                    
-                    # 1. 轨迹平滑推移
-                    human_move_cdp(driver, cur_x, cur_y, click_x, click_y)
-                    time.sleep(random.uniform(0.2, 0.4))
-                    
-                    # 2. 点击前截图（带鼠标落点红圈标记）
-                    take_snapshot(driver, "before_cdp_click", mouse_pos=(click_x, click_y))
-                    
-                    # 3. 发射物理点击事件序列
-                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
-                    time.sleep(random.uniform(0.07, 0.12))
-                    driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
-                    logging.info("💥 CDP 物理落点按压脉冲已发射")
-                    
-                    # 4. 严格按照要求挂起 6 秒，阻断任何抢跑导致的检测崩塌
-                    logging.info("⏳ 严格挂起 6 秒，观察防线反馈反应...")
-                    time.sleep(6)
-                    
-                    # 5. 点击后截图记录
-                    take_snapshot(driver, "after_cdp_click", mouse_pos=(click_x, click_y))
-                    
-                    cur_x, cur_y = click_x, click_y
-                    break
-        except: 
-            pass
+                    logging.info(f"🚨 [精准锁定] 找到验证框原子节点 -> X: {click_x}, Y: {click_y}")
+                else:
+                    # 兜底：DOM 节点被隐藏混淆，执行几何盲击（Turnstile标准尺寸 300x65，复选框在中左侧）
+                    click_x = int(iframe_box['x'] + 35) 
+                    click_y = int(iframe_box['y'] + (iframe_box['height'] / 2))
+                    logging.warning(f"⚠️ [几何盲击] 虽未在 DOM 中定位到节点，但捕获到 CF Iframe 边界，对准标准复选框中心点发起盲击 -> X: {click_x}, Y: {click_y}")
+
+                # 执行点击流行为
+                human_move_cdp(driver, cur_x, cur_y, click_x, click_y)
+                time.sleep(random.uniform(0.2, 0.4))
+                
+                take_snapshot(driver, "before_cdp_click", mouse_pos=(click_x, click_y))
+                
+                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
+                time.sleep(random.uniform(0.07, 0.12))
+                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
+                
+                logging.info("💥 CDP 脉冲发射完毕，死等 6 秒观察防线反应...")
+                time.sleep(6)
+                
+                take_snapshot(driver, "after_cdp_click", mouse_pos=(click_x, click_y))
+                
+                cur_x, cur_y = click_x, click_y
+                break
+        except Exception as e:
+            logging.debug(f"外层通道异常: {e}")
+            
         time.sleep(0.5)
 
     take_snapshot(driver, "fatal_timeout")
-    raise TimeoutError("即使通过绝对坐标注入物理行为，环境指纹/IP风险分仍未获 CF 准行。")
+    raise TimeoutError("时限内未通过验证。")
 
 
 # ========== 驱动装配区 ==========
