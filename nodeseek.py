@@ -123,7 +123,7 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
     cur_x, cur_y = random.randint(10, 40), random.randint(10, 40)
 
     while time.time() - start_time < timeout:
-        # 通道1：业务层就绪检测
+        # 1. 顶层业务就绪检测
         try:
             elements = driver.find_elements(by, value)
             if elements and elements[0].is_displayed():
@@ -131,111 +131,94 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
                     pass
                 else: 
                     return elements[0]
-        except Exception as e:
+        except:
             pass
 
-        # 通道2：无差别穿透所有可见 Iframe
+        # 2. 深度穿透主页 Shadow DOM 抓取隐藏的 Iframe 几何边界
         try:
-            iframes = driver.find_elements(By.TAG_NAME, "iframe")
-            if iframes:
-                logging.info(f"📊 视口内当前存在 {len(iframes)} 个 Iframe 容器，开始逐一解构...")
-            
-            for idx, iframe in enumerate(iframes):
-                ifr_id = ""
-                ifr_src = ""
-                try:
-                    ifr_id = iframe.get_attribute("id") or ""
-                    ifr_src = iframe.get_attribute("src") or ""
-                except Exception as attr_e:
-                    logging.info(f"  [Iframe #{idx}] 属性读取失败，跳过")
-                    continue
-                
-                logging.info(f"  [Iframe #{idx}] 探测 -> ID: '{ifr_id}', SRC: '{ifr_src[:60]}'")
-
-                # 获取 Iframe 绝对视口边界
-                try:
-                    iframe_box = driver.execute_script("""
-                        var rect = arguments[0].getBoundingClientRect();
-                        return {x: rect.left, y: rect.top, width: rect.width, height: rect.height};
-                    """, iframe)
-                except Exception as script_e:
-                    logging.info(f"  [Iframe #{idx}] 边界几何计算失败")
-                    continue
-                
-                if not iframe_box or iframe_box['width'] == 0 or iframe_box['height'] == 0:
-                    logging.info(f"  [Iframe #{idx}] 当前处于不可见或隐藏状态 (0x0)")
-                    continue
-
-                # 强行切入上下文
-                pos = None
-                try:
-                    driver.switch_to.frame(iframe)
-                    pos = driver.execute_script("""
-                        function findBox(root) {
-                            if (!root) return null;
-                            let selectors = ['input[type="checkbox"]', '.ctp-checkbox-label', '.checkmark', '#challenge-stage', '[id*="challenge"]'];
-                            for (let s of selectors) {
-                                let el = root.querySelector(s);
-                                if (el && el.getBoundingClientRect().width > 0) {
-                                    var r = el.getBoundingClientRect();
-                                    return { x: r.left + r.width/2, y: r.top + r.height/2 };
-                                }
+            # 利用 JS 递归黑魔法，无视一切 Shadow DOM 层级，强行剥离出所有 Iframe 绝对坐标
+            iframes_meta = driver.execute_script("""
+                function collectIframesDeep(root, list = []) {
+                    if (!root) return list;
+                    
+                    // 抓取当前主域/影子域下的 iframe
+                    let ifrs = root.querySelectorAll('iframe');
+                    ifrs.forEach(f => {
+                        try {
+                            let rect = f.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                list.push({
+                                    id: f.id || '',
+                                    src: f.src || '',
+                                    x: rect.left,
+                                    y: rect.top,
+                                    width: rect.width,
+                                    height: rect.height
+                                });
                             }
-                            let kids = root.querySelectorAll('*');
-                            for (let i=0; i<kids.length; i++) {
-                                if (kids[i].shadowRoot) {
-                                    let f = findBox(kids[i].shadowRoot);
-                                    if (f) return f;
-                                }
-                            }
-                            return null;
+                        } catch(e){}
+                    });
+                    
+                    // 递归向下刺穿所有潜在的影子节点
+                    let allNodes = root.querySelectorAll('*');
+                    allNodes.forEach(node => {
+                        if (node.shadowRoot) {
+                            collectIframesDeep(node.shadowRoot, list);
                         }
-                        return findBox(document);
-                    """)
-                except Exception as iframe_inner_e:
-                    logging.info(f"  [Iframe #{idx}] 内部 DOM 解析剥离异常: {iframe_inner_e}")
-                finally:
-                    # 确保必须横向回归主文档域
-                    try: driver.switch_to.default_content()
-                    except: pass
+                    });
+                    return list;
+                }
+                return collectIframesDeep(document);
+            """)
 
-                # 判定映射物理坐标：精准锁定或几何盲击
-                if pos:
-                    click_x = int(iframe_box['x'] + pos['x'])
-                    click_y = int(iframe_box['y'] + pos['y'])
-                    logging.info(f"🎯 [物理瞄准成功] 在 Iframe #{idx} 内部精确定位到目标节点 -> X: {click_x}, Y: {click_y}")
-                else:
-                    # 兜底盲击：Turnstile标准面板尺寸 300x65，复选框固定在左侧约 35px 处
-                    click_x = int(iframe_box['x'] + 35) 
-                    click_y = int(iframe_box['y'] + (iframe_box['height'] / 2))
-                    logging.info(f"🎲 [触发几何盲击] Iframe #{idx} 内部未扫到混淆样式名，启动几何中心左侧盲击定位 -> X: {click_x}, Y: {click_y}")
-
-                # 执行 CDP 物理行为链
+            # 筛选符合 Cloudflare 特征或 Turnstile 典型尺寸的容器
+            target_ifr = None
+            if iframes_meta:
+                for ifr in iframes_meta:
+                    # 如果命中特征字符，或者尺寸符合标准的 Turnstile 面板 (通常宽约300, 高约65)
+                    if "cloudflare" in ifr['src'] or "challenge" in ifr['src'] or "cloudflare" in ifr['id'] or (290 <= ifr['width'] <= 350 and 60 <= ifr['height'] <= 90):
+                        target_ifr = ifr
+                        break
+            
+            if target_ifr:
+                logging.info(f"🎯 [影子劫持成功] 抓取到 CF 盾物理边界 -> ID: '{target_ifr['id']}', 坐标: X={target_ifr['x']}, Y={target_ifr['y']}, 宽高: {target_ifr['width']}x{target_ifr['height']}")
+                
+                # 标准 Turnstile 复选框核心几何偏置：距离 Iframe 左边界 35px，高度居中
+                click_x = int(target_ifr['x'] + 35)
+                click_y = int(target_ifr['y'] + (target_ifr['height'] / 2))
+                
+                logging.info(f"🚨 [瞄准锁定] 终点坐标映射完成 -> X: {click_x}, Y: {click_y}")
+                
+                # CDP 模拟人类物理轨迹移动
                 human_move_cdp(driver, cur_x, cur_y, click_x, click_y)
                 time.sleep(random.uniform(0.2, 0.4))
                 
-                # 点击前截带有红圈十字靶心的物理快照
+                # 触发带有红色十字靶心标记的点击前快照
                 take_snapshot(driver, "before_cdp_click", mouse_pos=(click_x, click_y))
                 
+                # 物理按压脉冲发射
                 driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
                 time.sleep(random.uniform(0.07, 0.12))
                 driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
+                logging.info("💥 CDP 盲击脉冲已释放")
                 
-                logging.info("💥 CDP 点击脉冲已释放，强制挂起 6 秒挂起视口...")
+                # 死等 6 秒
+                logging.info("⏳ 严格挂起 6 秒，阻断检测...")
                 time.sleep(6)
                 
                 # 点击后快照
                 take_snapshot(driver, "after_cdp_click", mouse_pos=(click_x, click_y))
                 
                 cur_x, cur_y = click_x, click_y
-                break  # 释放当前轮次，让外层 While 重新检查业务层 `.head-info > div`
+                break # 结束本次刺穿，放行至外层 while 校验 `.head-info > div` 状态
+                
         except Exception as e:
-            logging.info(f"⚠️ 穿透通道外层循环发生未预料异常: {e}")
-            
+            logging.info(f"⚠️ 影子穿透核心遭遇运行时异常: {e}")
+
         time.sleep(0.5)
 
     take_snapshot(driver, "fatal_timeout")
-    raise TimeoutError("时限内未通过验证。") 
+    raise TimeoutError("时限内未通过验证。")
 
 
 # ========== 驱动装配区 ==========
