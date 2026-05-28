@@ -123,7 +123,7 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
     cur_x, cur_y = random.randint(10, 40), random.randint(10, 40)
 
     while time.time() - start_time < timeout:
-        # 1. 顶层业务就绪检测
+        # 1. 顶层业务层就绪检测
         try:
             elements = driver.find_elements(by, value)
             if elements and elements[0].is_displayed():
@@ -134,32 +134,27 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
         except:
             pass
 
-        # 2. 深度穿透主页 Shadow DOM 抓取隐藏的 Iframe 几何边界
+        # 2. 深度穿透主页所有 Shadow DOM 抓取隐藏的 Iframe
         try:
-            # 利用 JS 递归黑魔法，无视一切 Shadow DOM 层级，强行剥离出所有 Iframe 绝对坐标
+            # 移除所有过滤限制，强制抓取哪怕宽高为 0 的所有 Iframe
             iframes_meta = driver.execute_script("""
                 function collectIframesDeep(root, list = []) {
                     if (!root) return list;
-                    
-                    // 抓取当前主域/影子域下的 iframe
                     let ifrs = root.querySelectorAll('iframe');
                     ifrs.forEach(f => {
                         try {
                             let rect = f.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {
-                                list.push({
-                                    id: f.id || '',
-                                    src: f.src || '',
-                                    x: rect.left,
-                                    y: rect.top,
-                                    width: rect.width,
-                                    height: rect.height
-                                });
-                            }
+                            list.push({
+                                id: f.id || '',
+                                src: f.src || '',
+                                x: rect.left,
+                                y: rect.top,
+                                width: rect.width,
+                                height: rect.height
+                            });
                         } catch(e){}
                     });
                     
-                    // 递归向下刺穿所有潜在的影子节点
                     let allNodes = root.querySelectorAll('*');
                     allNodes.forEach(node => {
                         if (node.shadowRoot) {
@@ -171,55 +166,56 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
                 return collectIframesDeep(document);
             """)
 
-            # 筛选符合 Cloudflare 特征或 Turnstile 典型尺寸的容器
-            target_ifr = None
-            if iframes_meta:
-                for ifr in iframes_meta:
-                    # 如果命中特征字符，或者尺寸符合标准的 Turnstile 面板 (通常宽约300, 高约65)
-                    if "cloudflare" in ifr['src'] or "challenge" in ifr['src'] or "cloudflare" in ifr['id'] or (290 <= ifr['width'] <= 350 and 60 <= ifr['height'] <= 90):
-                        target_ifr = ifr
-                        break
-            
-            if target_ifr:
-                logging.info(f"🎯 [影子劫持成功] 抓取到 CF 盾物理边界 -> ID: '{target_ifr['id']}', 坐标: X={target_ifr['x']}, Y={target_ifr['y']}, 宽高: {target_ifr['width']}x{target_ifr['height']}")
-                
-                # 标准 Turnstile 复选框核心几何偏置：距离 Iframe 左边界 35px，高度居中
-                click_x = int(target_ifr['x'] + 35)
-                click_y = int(target_ifr['y'] + (target_ifr['height'] / 2))
-                
-                logging.info(f"🚨 [瞄准锁定] 终点坐标映射完成 -> X: {click_x}, Y: {click_y}")
-                
-                # CDP 模拟人类物理轨迹移动
-                human_move_cdp(driver, cur_x, cur_y, click_x, click_y)
-                time.sleep(random.uniform(0.2, 0.4))
-                
-                # 触发带有红色十字靶心标记的点击前快照
-                take_snapshot(driver, "before_cdp_click", mouse_pos=(click_x, click_y))
-                
-                # 物理按压脉冲发射
-                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
-                time.sleep(random.uniform(0.07, 0.12))
-                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
-                logging.info("💥 CDP 盲击脉冲已释放")
-                
-                # 死等 6 秒
-                logging.info("⏳ 严格挂起 6 秒，阻断检测...")
-                time.sleep(6)
-                
-                # 点击后快照
-                take_snapshot(driver, "after_cdp_click", mouse_pos=(click_x, click_y))
-                
-                cur_x, cur_y = click_x, click_y
-                break # 结束本次刺穿，放行至外层 while 校验 `.head-info > div` 状态
+            if not iframes_meta:
+                logging.info("ℹ️ [诊断] 当前轮次：全页（含开放式 Shadow DOM）未发现任何 Iframe 元素")
+            else:
+                logging.info(f"ℹ️ [诊断] 当前轮次：全页共发现 {len(iframes_meta)} 个 Iframe，明细如下：")
+                for idx, ifr in enumerate(iframes_meta):
+                    logging.info(f"  -> [Iframe #{idx}] ID='{ifr['id']}', 尺寸={ifr['width']}x{ifr['height']}, SRC='{ifr['src'][:90]}'")
+                    
+                    # 极其宽松的判定标准：包含关键字，或者尺寸长得像 Turnstile (宽280~350, 高60~90)
+                    is_cf = "cloudflare" in ifr['src'] or "challenge" in ifr['src'] or "cloudflare" in ifr['id']
+                    is_size = (250 <= ifr['width'] <= 350 and 50 <= ifr['height'] <= 100)
+                    
+                    if is_cf or is_size:
+                        logging.info(f"🎯 [锁定目标] Iframe #{idx} 命中防线特征，准备执行行为链")
+                        
+                        # 盲击坐标：左边界往右 35 像素（复选框标准物理中心点），高度居中
+                        click_x = int(ifr['x'] + 35)
+                        click_y = int(ifr['y'] + (ifr['height'] / 2))
+                        
+                        logging.info(f"🚨 [瞄准锁定] 终点物理坐标 -> X: {click_x}, Y: {click_y}")
+                        
+                        # 纯 CDP 轨迹移动
+                        human_move_cdp(driver, cur_x, cur_y, click_x, click_y)
+                        time.sleep(0.3)
+                        
+                        # 点击前截图（在此处画红圈十字）
+                        take_snapshot(driver, "before_cdp_click", mouse_pos=(click_x, click_y))
+                        
+                        # CDP 物理按压脉冲
+                        driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
+                        time.sleep(0.1)
+                        driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': click_x, 'y': click_y, 'button': 'left', 'clickCount': 1})
+                        logging.info("💥 CDP 物理脉冲已释放")
+                        
+                        # 严格挂起 6 秒
+                        logging.info("⏳ 强制挂起 6 秒，阻断检测...")
+                        time.sleep(6)
+                        
+                        # 点击后截图
+                        take_snapshot(driver, "after_cdp_click", mouse_pos=(click_x, click_y))
+                        
+                        cur_x, cur_y = click_x, click_y
+                        break # 跳出 Iframe 遍历，让外层 While 重新验证业务 DOM 是否被放行
                 
         except Exception as e:
-            logging.info(f"⚠️ 影子穿透核心遭遇运行时异常: {e}")
+            logging.info(f"⚠️ 穿透核心遭遇异常: {e}")
 
-        time.sleep(0.5)
+        time.sleep(1.0)
 
     take_snapshot(driver, "fatal_timeout")
     raise TimeoutError("时限内未通过验证。")
-
 
 # ========== 驱动装配区 ==========
 
