@@ -235,7 +235,7 @@ def wait_for_element_safely(driver, by, value, timeout=60, step_name="未知"):
         time.sleep(0.5)
 
     take_snapshot(driver, "fatal_timeout")
-    raise TimeoutError("时限内未通过验证。")    take_snapshot(driver, "fatal_timeout")
+    raise TimeoutError("时限内未通过验证。") 
 
 
 # ========== 驱动装配区 ==========
